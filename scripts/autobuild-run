@@ -64,6 +64,8 @@ defaults = {
     '--njobs': '1',
     '--submitter': 'N/A',
     '--make-opts': '',
+    '--br-git-uri': BUILDROOT_GIT_REPO_URI,
+    '--br-git-branch': BUILDROOT_GIT_BRANCH,
 }
 
 doc = """autobuild-run - run Buildroot autobuilder
@@ -84,6 +86,14 @@ Options:
   --make-opts OPTSTRING          string of extra options to pass to Buildroot
                                  make, such as specific command wrappers
                                  [default: ]
+  --br-git-uri GIT_REPO_URI      Buildroot git repository uri used from the instances.
+                                 When an alternative git repo uri is set, result uplaod
+                                 is disabled.
+                                 [default: the official Buildroot repository]
+  --br-git-branch GIT_BRANCH     Buildroot git branch used for the instance
+                                 When an alternative git branch is set, result uplaod
+                                 is disabled.
+                                 [default: master]
   -c, --config CONFIG            path to configuration file
 
 Format of the configuration file:
@@ -98,6 +108,8 @@ Format of the configuration file:
    http-login = <value>
    http-password = <value>
    submitter = <value>
+   br-git-uri = <value>
+   br-git-branch = <value>
 
 Default values for the arguments are:
 
@@ -152,6 +164,9 @@ else:
 
 MAX_DURATION = 60 * 60 * 4
 VERSION = 1
+
+BUILDROOT_DEFAULT_REPO   = "git://git.busybox.net/buildroot"
+BUILDROOT_DEFAULT_BRANCH = "master"
 
 def log_write(logf, msg):
     logf.write("[%s] %s\n" % (strftime("%a, %d %b %Y %H:%M:%S", localtime()), msg))
@@ -296,17 +311,42 @@ def prepare_build(**kwargs):
 
     # Clone Buildroot. This only happens if the source directory
     # didn't exist already.
-    srcdir = os.path.join(idir, "buildroot")
+    srcdir = os.path.abspath(os.path.join(idir, "buildroot"))
     if not os.path.exists(srcdir):
-        ret = subprocess.call(["git", "clone", "git://git.busybox.net/buildroot", srcdir],
+        ret = subprocess.call(["git", "clone", "-b", kwargs['br_git_branch'],
+                              kwargs['br_git_repo_uri'], srcdir],
                               stdout=log, stderr=log)
         if ret != 0:
             log_write(log, "ERROR: could not clone Buildroot sources")
             return -1
 
+    # Make sure the remote is correct and fetch it
+    ret = subprocess.call(["git", "remote", "set-url", "origin" , kwargs['br_git_repo_uri']],
+                          cwd=srcdir, stdout=log, stderr=log)
+    if ret != 0:
+        log_write(log, "ERROR: could not set remote url")
+        return -1
+
+    ret = subprocess.call(["git", "fetch", "origin"],
+                          cwd=srcdir, stdout=log, stderr=log)
+    if ret != 0:
+        log_write(log, "ERROR: could not fetch origin")
+        return -1
+
+    # We don't care if this fail (i.e. when trying to remove a branch that does not exist)
+    subprocess.call(["git", "branch", "-D", kwargs['br_git_branch']],
+                          cwd=srcdir, stdout=log, stderr=log)
+
+    # Checkout and pull the branch
+    ret = subprocess.call(["git", "checkout", "-b", kwargs['br_git_branch'],
+                          "-t", "origin/%s" % kwargs['br_git_branch']],
+                          cwd=srcdir, stdout=log, stderr=log)
+    if ret != 0:
+        log_write(log, "ERROR: could not checkout the branch")
+        return -1
+
     # Update the Buildroot sources.
-    abssrcdir = os.path.abspath(srcdir)
-    ret = subprocess.call(["git", "pull"], cwd=abssrcdir, stdout=log, stderr=log)
+    ret = subprocess.call(["git", "pull"], cwd=srcdir, stdout=log, stderr=log)
     if ret != 0:
         log_write(log, "ERROR: could not pull Buildroot sources")
         return -1
@@ -794,13 +834,21 @@ def main():
 
     # http_login/password could theoretically be allowed as empty, so check
     # explicitly on None.
-    upload = (args['--http-login'] is not None) \
-             and (args['--http-password'] is not None)
+    upload = True
+    if args['--http-login'] is None or args['--http-password'] is None:
+        print("WARN: due to the lack of http login/password details, results will not be submitted")
+        upload = False
+    # disable result upload when using alternative git repository and/or branch
+    if args['--br-git-uri'] != BUILDROOT_GIT_REPO_URI \
+            or args['--br-git-branch'] != BUILDROOT_GIT_BRANCH:
+        print("WARN: using alternative git repository and/or branch, results will not be submitted")
+        upload = False
+
     if upload:
         sysinfo.needed_progs.append("curl")
     else:
-        print("WARN: due to the lack of http login/password details, results will not be submitted")
         print("WARN: tarballs of results will be kept locally only")
+
 
     if not sysinfo.check_requirements():
         sys.exit(1)
@@ -813,7 +861,7 @@ def main():
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
         # stop all instances to prevent new children to be spawned
-        for p in processes:
+        for p in processes:yy
             p.terminate()
 
         # kill build processes started with timeout (that puts its children
@@ -844,7 +892,9 @@ def main():
                 submitter = args['--submitter'],
                 make_opts = args['--make-opts'],
                 upload = upload,
-                buildpid = buildpid
+                buildpid = buildpid,
+                br_git_repo_uri = args['--br-git-uri'],
+                br_git_branch = args['--br-git-branch'],
             ))
         p.start()
         processes.append(p)
