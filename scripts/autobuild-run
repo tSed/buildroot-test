@@ -481,6 +481,18 @@ def fixup_config(**kwargs):
 
     return True
 
+def custom_filter_config(**kwargs):
+    idir = "instance-%d" % kwargs['instance']
+
+    outputdir = os.path.join(idir, "output")
+    with open(os.path.join(outputdir, ".config")) as configf:
+        configlines = configf.readlines()
+
+    if not 'BR2_PACKAGE_OPENCV=y\n' in configlines:
+        return False
+
+    return True
+
 def gen_config(**kwargs):
     """Generate a new random configuration
 
@@ -541,6 +553,9 @@ def gen_config(**kwargs):
                               stdout=devnull, stderr=devnull)
         if ret != 0:
             log_write(log, "ERROR: cannot generate random configuration")
+            return -1
+
+        if not custom_filter_config(**kwargs):
             return -1
         if fixup_config(**kwargs):
             break
