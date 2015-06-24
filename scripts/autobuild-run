@@ -131,7 +131,7 @@ import hashlib
 import mmap
 import multiprocessing
 import os
-from random import randint
+from random import randint, choice as random_choice
 import re
 import shutil
 import signal
@@ -493,6 +493,67 @@ def custom_filter_config(**kwargs):
 
     return True
 
+def custom_fixup_config(**kwargs):
+    idir = os.path.join(os.getcwd(), "instance-%d" % kwargs['instance'])
+    log = kwargs['log']
+
+    try:
+        sys.path.insert(0, os.path.join(idir, "support", "scripts"))
+        import kconfiglib
+    except ImportError:
+        message = """
+Could not find the module 'kconfiglib' in the PYTHONPATH:
+"""
+        message += "\n".join(["  {0}".format(path) for path in sys.path])
+        message += """
+
+Make sure the Kconfiglib directory is in the PYTHONPATH, then relaunch the
+script.
+
+You can get kconfiglib from:
+  https://github.com/ulfalizer/Kconfiglib
+
+
+"""
+        log_write(log, message)
+        log_write(log, "INFO: Cannot randomize config choices")
+
+        return True
+
+    log_write(log, "INFO: Randomizing config choices")
+
+    outputdir = os.path.join(idir, "output")
+    base_dir = os.path.join(idir, "buildroot")
+    os.environ.update({ "BR2_EXTERNAL": os.path.join(base_dir, "support", "dummy-external") })
+    config = kconfiglib.Config(os.path.join(base_dir, "Config.in"), base_dir,
+            print_warnings=False)
+
+    with open(os.path.join(outputdir, ".config")) as configf:
+        configlines = configf.readlines()
+
+    config_pkgs = [s for s in configlines if s.startswith("BR2_PACKAGE_")]
+    for entry in config_pkgs:
+        symbol = entry.split("=", 1)[0]
+        choice = config.get_symbol(symbol).get_parent()
+        if not choice.is_choice():
+            continue
+        new_symbol = random_choice(choice.get_symbols()).get_name()
+        log_write(log, "INFO: choice randomization: %-40s => %s" % (symbol, new_symbol))
+        configlines.remove(entry)
+        configlines.append("%s=y\n" % new_symbol)
+
+    with open(os.path.join(outputdir, ".config"), "w+") as configf:
+        configf.writelines(configlines)
+
+    with open(os.devnull, "w") as devnull:
+        ret = subprocess.call(["yes '' 2>/dev/null| make O=%s -C %s oldconfig" % \
+                           (outputdir, base_dir)], shell=True, stdout=devnull, stderr=devnull)
+    if ret != 0:
+        log_write(log, "ERROR: cannot oldconfig")
+        return False
+
+    return True
+
 def gen_config(**kwargs):
     """Generate a new random configuration
 
@@ -557,6 +618,10 @@ def gen_config(**kwargs):
 
         if not custom_filter_config(**kwargs):
             return -1
+
+        if not custom_fixup_config(**kwargs):
+            return -1
+
         if fixup_config(**kwargs):
             break
 
